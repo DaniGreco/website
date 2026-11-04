@@ -8,12 +8,13 @@ interface Props {
   title: string;
   description: string;
   lang?: keyof typeof LANGS;
-  // The 404 page has no translation to point to.
-  alternates?: boolean;
+  // A page with no address of its own, such as the 404 page: it has no canonical address and no
+  // translation to point to, and search engines are asked to leave it out.
+  noindex?: boolean;
 }
 
-const { title, description, lang = 'en', alternates = true } = Astro.props;
-const canonical = new URL(Astro.url.pathname, Astro.site);
+const { title, description, lang = 'en', noindex = false } = Astro.props;
+const canonical = noindex ? null : new URL(Astro.url.pathname, Astro.site);
 ---
 
 <!doctype html>
@@ -24,9 +25,10 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
     <script is:inline set:html={INLINE_SCRIPTS.markJs} />
     <title>Daniele Greco</title>
     <meta name="description" content={description} />
-    <link rel="canonical" href={canonical} />
-    {alternates && Object.entries(LANGS).map(([code, l]) => <link rel="alternate" hreflang={code} href={new URL(l.path, Astro.site)} />)}
-    {alternates && <link rel="alternate" hreflang="x-default" href={new URL('/', Astro.site)} />}
+    {noindex && <meta name="robots" content="noindex" />}
+    {canonical && <link rel="canonical" href={canonical} />}
+    {canonical && Object.entries(LANGS).map(([code, l]) => <link rel="alternate" hreflang={code} href={new URL(l.path, Astro.site)} />)}
+    {canonical && <link rel="alternate" hreflang="x-default" href={new URL('/', Astro.site)} />}
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -35,7 +37,7 @@ const canonical = new URL(Astro.url.pathname, Astro.site);
     <meta property="og:type" content="website" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta property="og:url" content={canonical} />
+    {canonical && <meta property="og:url" content={canonical} />}
     <meta property="og:locale" content={LANGS[lang].locale} />
     <meta property="og:image" content={new URL('/og.png', Astro.site)} />
     <meta name="twitter:card" content="summary_large_image" />
