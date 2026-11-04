@@ -905,7 +905,12 @@ export default function Playground({ lang = 'en' }) {
   // ---------- autoplay ----------
   // While the demo is on screen, something happens every few seconds. A click or a key press
   // inside the demo hands it to the visitor for 20 seconds; the pause button stops it.
+  // With reduced motion there is no autoplay, and no button to start it.
   const [autoplay, setAutoplay] = useState(true);
+  // The reduced motion setting is known only in the browser: it changes the markup after the first
+  // render, so the page hydrates with the same markup the server wrote.
+  const [still, setStill] = useState(false);
+  const playing = autoplay && !still;
   const rootRef = useRef(null);
   const inView = useRef(false);
   const handsOn = useRef(0);
@@ -940,6 +945,7 @@ export default function Playground({ lang = 'en' }) {
   autoRef.current = autoStep;
 
   useEffect(() => {
+    setStill(Boolean(reduce));
     if (reduce) setAutoplay(false);
   }, [reduce]);
 
@@ -980,6 +986,7 @@ export default function Playground({ lang = 'en' }) {
     handsOn.current = Date.now() + 20000;
   };
   const toggleAutoplay = () => {
+    if (reduce) return;
     handsOn.current = 0;
     setAutoplay((on) => !on);
   };
@@ -1031,24 +1038,27 @@ export default function Playground({ lang = 'en' }) {
           <button type="button" onClick={reset} className="rounded-full px-2 py-1.5 text-left text-[14px] font-semibold text-ink/75 underline decoration-ink/20 underline-offset-4 hover:text-ink">
             {T.ui.reset}
           </button>
-          <button
-            type="button"
-            onClick={toggleAutoplay}
-            aria-label={autoplay ? T.ui.pause : T.ui.play}
-            title={autoplay ? T.ui.pause : T.ui.play}
-            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-ink/15 bg-white text-ink transition-colors hover:border-ink hover:bg-ink hover:text-white"
-          >
-            {autoplay ? (
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />
-              </svg>
-            )}
-          </button>
+          {/* Hidden by CSS too, so it does not show up before the page hydrates. */}
+          {!still && (
+            <button
+              type="button"
+              onClick={toggleAutoplay}
+              aria-label={playing ? T.ui.pause : T.ui.play}
+              title={playing ? T.ui.pause : T.ui.play}
+              className="flex size-9 shrink-0 items-center justify-center rounded-full border border-ink/15 bg-white text-ink transition-colors hover:border-ink hover:bg-ink hover:text-white motion-reduce:hidden"
+            >
+              {playing ? (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                  <rect x="6" y="5" width="4" height="14" rx="1" />
+                  <rect x="14" y="5" width="4" height="14" rx="1" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
         <Action dot="text-traffic" fired={fired.page} onClick={run.page}>{T.ui.buttons.page}</Action>
         <Action dot="text-gpu" fired={fired.ask} onClick={run.ask}>{T.ui.buttons.ask}</Action>
@@ -1070,7 +1080,8 @@ export default function Playground({ lang = 'en' }) {
 
         <section aria-label={T.ui.logLabel} className="sticky bottom-3 z-10 h-[8.5rem] rounded-[22px] bg-ink text-white shadow-[0_14px_36px_-12px_rgba(20,24,46,0.55)] [grid-area:log] lg:relative lg:bottom-auto lg:h-auto lg:min-h-[8rem] lg:shadow-none">
           <div ref={logRef} className="absolute inset-0 overflow-y-auto p-4 lg:p-5">
-            <ol aria-live={autoplay ? 'off' : 'polite'} className="space-y-2 text-[14px] leading-snug">
+            {/* Autoplay writes a line every few seconds: read aloud only the lines the visitor starts. */}
+            <ol aria-live={playing ? 'off' : 'polite'} className="space-y-2 text-[14px] leading-snug">
               {s.log.length === 0 && <li className="text-white/60">{T.ui.waiting}</li>}
               {s.log.map((l) => (
                 <li key={l.id} className="flex gap-3">
