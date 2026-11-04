@@ -197,6 +197,7 @@ const nav = [
 
 <script>
   import { start as startBackground } from '../scripts/backgrounds/flow.js';
+  import { scrollsInside } from '../scripts/wheel.js';
 
   const canvas = document.getElementById('background');
   if (canvas instanceof HTMLCanvasElement) startBackground(canvas);
@@ -228,10 +229,17 @@ const nav = [
   // is taller than the window, or stops short of the top and then corrects itself.
   // Down, it steps in only once the title and the intro are in view: below them is just the demo button.
   // Up, only from the start of the demo. Narrow windows scroll freely, as on phones (global.css).
+  // Over a box that can still scroll that way, such as the demo log, the wheel scrolls the box, and the
+  // rest of that gesture stays there once the box reaches its end.
   const intro = document.getElementById('hero-intro');
   const demo = document.getElementById('demo');
   const snapping = matchMedia('(min-width: 1024px)');
   let gesture = 0;
+  let boxGesture = 0;
+  const holdBox = () => {
+    clearTimeout(boxGesture);
+    boxGesture = setTimeout(() => (boxGesture = 0), 200);
+  };
   window.addEventListener('wheel', (e) => {
     // The rest of the same gesture, such as touchpad momentum, would carry on past the target.
     if (gesture) {
@@ -241,6 +249,15 @@ const nav = [
       return;
     }
     if (!intro || !demo || !snapping.matches || e.deltaY === 0 || e.ctrlKey) return;
+    if (e.target instanceof Element && scrollsInside(e.target, e.deltaY)) {
+      holdBox();
+      return;
+    }
+    if (boxGesture) {
+      e.preventDefault();
+      holdBox();
+      return;
+    }
     // How far the demo is from its place under the top bar: above 0 the first screen is in view.
     const demoBelow = demo.getBoundingClientRect().top - (bar?.offsetHeight ?? 0);
     if (e.deltaY > 0) {
