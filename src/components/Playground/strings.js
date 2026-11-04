@@ -53,7 +53,7 @@ const en = {
     registry: { name: 'Image registry', about: 'Every release is a container image stored here, so any version can come back.' },
   },
   ui: {
-    mapLabel: 'Map of the infrastructure',
+    mapLabel: 'Map of the infrastructure. The arrow keys move between its parts.',
     off: 'off',
     freeSlot: 'free slot',
     creating: 'creating',
@@ -221,7 +221,7 @@ const it = {
     registry: { name: 'Registry immagini', about: "Ogni rilascio è un'immagine container salvata qui, così qualsiasi versione può tornare." },
   },
   ui: {
-    mapLabel: "Mappa dell'infrastruttura",
+    mapLabel: "Mappa dell'infrastruttura. Le frecce spostano tra le sue parti.",
     off: 'spento',
     freeSlot: 'posto libero',
     creating: 'in creazione',
