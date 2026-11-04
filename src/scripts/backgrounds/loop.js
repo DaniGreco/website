@@ -1,11 +1,14 @@
 // Shared canvas loop for the hero backgrounds: sizing, frame cap, pause when off screen,
 // a single still frame when the visitor asks for reduced motion, and a smoothed pointer.
+// `watch` are the elements the background is meant for: the loop draws while one of them is in view,
+// and pauses on the last frame when none is. A fixed canvas is always on screen, so it cannot tell.
+// `setup` runs at the start and on every resize.
 // The pointer's `active` goes from 0 to 1 while it moves over the canvas and back to 0
 // a couple of seconds after it stops or leaves, so effects fade in and out.
 
 const IDLE_MS = 2500;
 
-export function runCanvas(canvas, { context = '2d', fps = 60, scale = 1, maxDpr = 2, setup, frame }) {
+export function runCanvas(canvas, { context = '2d', fps = 60, scale = 1, maxDpr = 2, watch = [canvas], setup, frame }) {
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const ctx = canvas.getContext(context, context === 'webgl' ? { antialias: false } : undefined);
   if (!ctx) return;
@@ -18,6 +21,7 @@ export function runCanvas(canvas, { context = '2d', fps = 60, scale = 1, maxDpr 
   let raf = 0;
   let last = 0;
   let visible = true;
+  const inView = new Set(watch);
 
   function resize() {
     const rect = canvas.getBoundingClientRect();
@@ -69,8 +73,13 @@ export function runCanvas(canvas, { context = '2d', fps = 60, scale = 1, maxDpr 
     resize();
     schedule();
   }).observe(canvas);
-  new IntersectionObserver(([entry]) => {
-    visible = entry.isIntersecting;
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) inView.add(entry.target);
+      else inView.delete(entry.target);
+    }
+    visible = inView.size > 0;
     schedule();
-  }).observe(canvas);
+  });
+  for (const el of watch) io.observe(el);
 }

@@ -199,8 +199,10 @@ const nav = [
   import { start as startBackground } from '../scripts/backgrounds/flow.js';
   import { scrollsInside } from '../scripts/wheel.js';
 
+  // The background is drawn for the first screen and the demo; further down it rests on its last frame.
   const canvas = document.getElementById('background');
-  if (canvas instanceof HTMLCanvasElement) startBackground(canvas);
+  const screens = ['top', 'demo'].map((id) => document.getElementById(id)).filter((el) => el !== null);
+  if (canvas instanceof HTMLCanvasElement) startBackground(canvas, screens.length ? screens : undefined);
 
   // Entrances: the hero plays on load, section titles when their screen comes into view.
   requestAnimationFrame(() => {
