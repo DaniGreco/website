@@ -7,6 +7,8 @@
 // Strands live for ever: one that leaves the screen comes back in from a random point of an
 // edge, just out of sight, so none ever appears or vanishes in view.
 // Each strand has its own velocity and only steers towards the current, so nothing snaps.
+// When the screen changes size (on phones it does while scrolling, as the address bar hides and
+// comes back) the strands carry on: a few are added from an edge or dropped, out of view first.
 import { makeNoise } from './noise.js';
 import { runCanvas } from './loop.js';
 
@@ -22,20 +24,33 @@ const HOLE = 4000; // pull of the pointer: HOLE / (distance² + SOFT²), in px p
 const SOFT = 60; // px: softens the pull near the centre
 const SPIN = 0.6; // sideways share of the pull, so strands spiral instead of falling straight
 const MAX_SPEED = 6;
-const DENSITY = 3700; // one strand per this many px² (about 350 on a 1440 × 900 screen)
-const MARGIN = 20; // px outside the screen where strands turn around
+export const DENSITY = 3700; // one strand per this many px² (about 350 on a 1440 × 900 screen)
+export const MARGIN = 20; // px outside the screen where strands turn around
 
-export function start(canvas) {
+// The strands, in flat arrays: one entry per strand, or TAIL entries for the remembered points.
+const FIELDS = {
+  px: [Float32Array, 1], py: [Float32Array, 1], // current position
+  vx: [Float32Array, 1], vy: [Float32Array, 1], // current velocity
+  xs: [Float32Array, TAIL], ys: [Float32Array, TAIL], // remembered points, ring buffers of TAIL per strand
+  head: [Uint16Array, 1], // newest remembered point
+  filled: [Uint16Array, 1], // how many remembered points are valid
+  pull: [Float32Array, 1], // how strongly the pointer bends each strand, smoothed
+  hue: [Uint8Array, 1], // which of the colours
+};
+
+export function makeField() {
   let count = 0;
-  let px = new Float32Array(0); // current position
+  let warm = false;
+  let px = new Float32Array(0);
   let py = new Float32Array(0);
-  let vx = new Float32Array(0); // current velocity
+  let vx = new Float32Array(0);
   let vy = new Float32Array(0);
-  let xs = new Float32Array(0); // remembered points, ring buffers of TAIL per particle
+  let xs = new Float32Array(0);
   let ys = new Float32Array(0);
-  let head = new Uint16Array(0); // newest remembered point
-  let filled = new Uint16Array(0); // how many remembered points are valid
-  let pull = new Float32Array(0); // how strongly the pointer bends each particle, smoothed
+  let head = new Uint16Array(0);
+  let filled = new Uint16Array(0);
+  let pull = new Float32Array(0);
+  let hue = new Uint8Array(0);
 
   // Anywhere on screen at the start; later only from just outside an edge.
   function spawn(i, W, H, fromEdge) {
@@ -57,6 +72,41 @@ export function start(canvas) {
     head[i] = 0;
     filled[i] = 1;
     pull[i] = 0;
+    hue[i] = Math.floor(Math.random() * RGB.length);
+  }
+
+  // Match the number of strands to the area. The strands there are carry on, those in view first;
+  // new ones come in from an edge. Only the first time are tails grown in advance, so the first
+  // frames are not a field of dots.
+  function resize(W, H) {
+    const next = Math.round((W * H) / DENSITY);
+    // Strands left outside come back in by themselves as they move (advance).
+    if (warm && next === count) return;
+    const kept = [];
+    const gone = [];
+    for (let i = 0; i < count; i++) {
+      const out = px[i] < -MARGIN || py[i] < -MARGIN || px[i] > W + MARGIN || py[i] > H + MARGIN;
+      (out ? gone : kept).push(i);
+    }
+    const keep = kept.concat(gone).slice(0, next);
+    const old = { px, py, vx, vy, xs, ys, head, filled, pull, hue };
+    const made = {};
+    // Usually no strand is out, and the ones kept are the first ones: one copy per array.
+    const inOrder = keep.every((from, to) => from === to);
+    for (const [name, [Type, n]] of Object.entries(FIELDS)) {
+      const arr = new Type(next * n);
+      if (inOrder) arr.set(old[name].subarray(0, keep.length * n));
+      else keep.forEach((from, to) => arr.set(old[name].subarray(from * n, (from + 1) * n), to * n));
+      made[name] = arr;
+    }
+    ({ px, py, vx, vy, xs, ys, head, filled, pull, hue } = made);
+    const fromEdge = warm;
+    for (let i = keep.length; i < next; i++) spawn(i, W, H, fromEdge);
+    count = next;
+    if (!warm && count) {
+      for (let n = 0; n < TAIL * 3; n++) advance(0, W, H, null);
+      warm = true;
+    }
   }
 
   function advance(t, W, H, pointer) {
@@ -119,7 +169,7 @@ export function start(canvas) {
       const n = filled[i];
       const o = i * TAIL;
       const strong = pull[i] > 0.2 ? 1 : 0;
-      const c = i % RGB.length;
+      const c = hue[i];
       // From the current position back through the remembered points, newest first.
       let p = slot(c, 0, strong);
       let path = paths[p];
@@ -156,30 +206,34 @@ export function start(canvas) {
     }
   }
 
+  return {
+    resize,
+    advance,
+    draw,
+    get count() {
+      return count;
+    },
+    // One strand, for tests.
+    strand: (i) => ({ x: px[i], y: py[i], tail: filled[i], hue: hue[i] }),
+  };
+}
+
+// `watch`: the screens the background is meant for (see loop.js).
+export function start(canvas, watch) {
+  const field = makeField();
   runCanvas(canvas, {
     fps: 60,
     // Drawn at 1 canvas pixel per CSS pixel: on high-density screens a full-resolution canvas
     // is four times the work for the GPU, and thin moving strands look the same.
     maxDpr: 1,
+    watch,
     setup(ctx, W, H) {
-      count = Math.round((W * H) / DENSITY);
-      px = new Float32Array(count);
-      py = new Float32Array(count);
-      xs = new Float32Array(count * TAIL);
-      ys = new Float32Array(count * TAIL);
-      head = new Uint16Array(count);
-      filled = new Uint16Array(count);
-      pull = new Float32Array(count);
-      vx = new Float32Array(count);
-      vy = new Float32Array(count);
-      for (let i = 0; i < count; i++) spawn(i, W, H, false);
-      // Start with tails already grown, so the first frames are not a field of dots.
-      for (let n = 0; n < TAIL * 3; n++) advance(0, W, H, null);
+      field.resize(W, H);
     },
     frame(ctx, t, W, H, dpr, still, pointer) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      advance(still ? 20 : t, W, H, still ? null : pointer);
-      draw(ctx, W, H);
+      field.advance(still ? 20 : t, W, H, still ? null : pointer);
+      field.draw(ctx, W, H);
     },
   });
 }

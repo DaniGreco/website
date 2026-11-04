@@ -85,6 +85,60 @@ export const quorum = (s) => CONTROL.filter((id) => isUp(s, id)).length >= 2;
 export const workersUp = (s) => WORKERS.filter((id) => isUp(s, id));
 export const nextSpare = (s) => WORKERS.find((id) => s.nodes[id] === 'absent');
 
+// The Kubernetes services a release updates: everything but the database.
+export const RELEASED = ['web', 'api', 'jobs'];
+const released = (p) => p.zone === 'k8s' && RELEASED.includes(p.svc) && live(p);
+
+// A release starts: pods still waiting for a worker will start from the new image, as with a Deployment.
+export function startRelease(s, ver) {
+  return { ...s, release: ver, pods: s.pods.map((p) => (released(p) && !p.node ? { ...p, ver } : p)) };
+}
+
+// The pods a release has not reached yet.
+export const behind = (s, ver) => s.pods.filter((p) => released(p) && p.ver < ver);
+
+// Switching a server off. Container fleet: its apps stop where they are, until someone restores them.
+// Kubernetes worker: its pods go back to the queue, and the database replica takes over if the primary
+// was there, and the pods will start again from the current release. GPU server: its models go back to
+// the queue. `on` is what was running on the server.
+export function switchOffNode(s, id) {
+  const node = NODES[id];
+  const on = podsOn(s, id);
+  const nodes = { ...s.nodes, [id]: 'down' };
+  const here = (p) => p.node === id && live(p);
+  if (node.zone === 'paas') {
+    return { s: { ...s, nodes, pods: s.pods.map((p) => (here(p) ? { ...p, status: 'down' } : p)) }, on, promoted: false };
+  }
+  if (node.role === 'control') return { s: { ...s, nodes }, on, promoted: false };
+  if (node.role === 'worker') {
+    let pods = s.pods.map((p) => {
+      if (!here(p)) return p;
+      return { ...p, node: null, status: 'pending', ...(released(p) && { ver: s.release }) };
+    });
+    const lost = pods.find((p) => p.svc === 'sql' && p.role === 'primary' && p.status === 'pending');
+    const replica = pods.find((p) => p.svc === 'sql' && p.role === 'replica' && p.status === 'run');
+    const promoted = Boolean(lost && replica);
+    if (promoted) {
+      pods = pods.map((p) => (p.id === lost.id ? { ...p, role: 'replica' } : p.id === replica.id ? { ...p, role: 'primary' } : p));
+    }
+    return { s: { ...s, nodes, pods }, on, promoted };
+  }
+  return { s: { ...s, nodes, pods: s.pods.map((p) => (here(p) ? { ...p, node: null, gpu: null, status: 'pending' } : p)) }, on, promoted: false };
+}
+
+// Switching a server back on: what stopped on it starts again. `back` is what restarts.
+export function switchOnNode(s, id) {
+  const back = podsOn(s, id).filter((p) => p.status === 'down');
+  return {
+    s: {
+      ...s,
+      nodes: { ...s.nodes, [id]: 'up' },
+      pods: s.pods.map((p) => (p.node === id && p.status === 'down' ? { ...p, status: 'run' } : p)),
+    },
+    back,
+  };
+}
+
 export function newPod(s, fields) {
   const seq = s.seq + 1;
   return { s: { ...s, seq }, pod: { id: `p${seq}`, seq, status: 'pending', ver: 1, node: null, ...fields } };

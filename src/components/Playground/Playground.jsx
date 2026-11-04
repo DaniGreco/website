@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
-  KIND, NODES, SERVICES, ZONE_NODES,
-  initialState, isUp, newPod, nextSpare, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem, workersUp,
+  KIND, NODES, RELEASED, SERVICES, ZONE_NODES,
+  initialState, isUp, newPod, nextSpare, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem,
+  startRelease, switchOffNode, switchOnNode, workersUp,
 } from './model.js';
 import { TALL, WIDE } from './layouts.js';
 import { STRINGS } from './strings.js';
+import { labelsIn, offLine, releaseLine } from './lines.js';
+import { focusOrder, keyOf, moveFocus } from './focus.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const LOG_LINES = 30;
 const INITIAL_SEQ = initialState().seq;
-const label = (p) => SERVICES[p.svc].label;
-const labelsIn = (T, pods) => T.list(pods.map(label));
 
 // Groups that heal themselves: after 5 seconds with at least `min` machines off, one comes back.
 // Their log lines live in strings.js, under `repair`.
@@ -92,13 +93,16 @@ const ROUTE_CLASS = {
   ink: 'stroke-ink/35',
 };
 
-function press(fn) {
+// A part of the map that can be picked. Only the part at `stop` is in the tab order: the arrow keys
+// move between the others (focus.js). `fn` learns whether the part was picked from the keyboard.
+function press(key, stop, fn) {
   return {
     role: 'button',
-    tabIndex: 0,
-    onClick: fn,
+    tabIndex: key === stop ? 0 : -1,
+    'data-key': key,
+    onClick: () => fn(false),
     onKeyDown: (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(true); }
     },
   };
 }
@@ -136,7 +140,7 @@ function Packet({ L, packet, boxes, reduce }) {
   );
 }
 
-function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
+function Pod({ T, fs, pod, box, reduce, selected, onSelect, stop }) {
   const svc = SERVICES[pod.svc];
   const kind = KIND[svc.kind];
   const solid = Boolean(svc.gpu);
@@ -158,7 +162,7 @@ function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
       transition={{ duration: reduce ? 0 : 0.6, ease: [0.3, 0, 0.2, 1] }}
       className="hit cursor-pointer"
       aria-label={`${T.services[pod.svc].name}${pod.status === 'down' ? T.ui.podStopped : pod.status === 'pending' ? T.ui.podWaiting : ''}`}
-      {...press(() => onSelect({ type: 'pod', id: pod.id }))}
+      {...press(`pod:${pod.id}`, stop, (keyboard) => onSelect({ type: 'pod', id: pod.id, keyboard }))}
     >
       <rect
         width={box.w}
@@ -187,15 +191,15 @@ function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
   );
 }
 
-function Tile({ T, fs, id, t, s, selected, onSelect }) {
+function Tile({ T, fs, id, t, s, selected, onSelect, stop }) {
   const node = NODES[id];
   const status = s.nodes[id];
   const sel = selected?.type === 'node' && selected.id === id;
-  const pick = () => onSelect({ type: 'node', id });
+  const pick = (keyboard) => onSelect({ type: 'node', id, keyboard });
   if (status === 'absent' || status === 'creating') {
     const creating = status === 'creating';
     return (
-      <g className="hit cursor-pointer" aria-label={creating ? T.ui.tileCreating(T.nodes[id]) : T.ui.tileFree} {...press(pick)}>
+      <g className="hit cursor-pointer" aria-label={creating ? T.ui.tileCreating(T.nodes[id]) : T.ui.tileFree} {...press(`node:${id}`, stop, pick)}>
         <rect
           x={t.x} y={t.y} width={t.w} height={t.h} rx={10}
           className={creating ? 'fill-traffic/[0.06] stroke-traffic creating' : 'fill-transparent stroke-ink/25'}
@@ -215,7 +219,7 @@ function Tile({ T, fs, id, t, s, selected, onSelect }) {
   const up = status === 'up';
   const small = node.role === 'control';
   return (
-    <g className="hit cursor-pointer" aria-label={T.ui.tileState(T.nodes[id], up)} {...press(pick)}>
+    <g className="hit cursor-pointer" aria-label={T.ui.tileState(T.nodes[id], up)} {...press(`node:${id}`, stop, pick)}>
       <rect
         x={t.x} y={t.y} width={t.w} height={t.h} rx={small ? 8 : 10}
         className={up ? `fill-white ${sel ? 'stroke-traffic' : 'stroke-ink/15'}` : 'fill-alarm/[0.07] stroke-alarm'}
@@ -263,11 +267,35 @@ function GpuRows({ L, t }) {
 function MapSvg({ T, L, s, reduce, selected, onSelect }) {
   const boxes = podBoxes(L, s);
   const zoneSel = (id) => selected?.type === 'zone' && selected.id === id;
+  // The part of the map in the tab order: the last one focused, or the first while that one is gone.
+  const order = focusOrder(L, s);
+  const [current, setCurrent] = useState(null);
+  const stop = order.includes(current) ? current : order[0];
+  const partOf = (e) => e.target.closest?.('[data-key]')?.getAttribute('data-key');
+  const onKeyDown = (e) => {
+    const from = partOf(e);
+    const next = from && moveFocus(order, from, e.key);
+    if (!next) return;
+    e.preventDefault();
+    setCurrent(next);
+    e.currentTarget.querySelector(`[data-key="${next}"]`)?.focus();
+  };
+  const onFocus = (e) => {
+    const key = partOf(e);
+    if (key) setCurrent(key);
+  };
   return (
-    <svg viewBox={`0 0 ${L.width} ${L.height}`} className="block h-auto w-full select-none font-sans" role="group" aria-label={T.ui.mapLabel}>
+    <svg
+      viewBox={`0 0 ${L.width} ${L.height}`}
+      className="block h-auto w-full select-none font-sans"
+      role="group"
+      aria-label={T.ui.mapLabel}
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
+    >
       <rect width={L.width} height={L.height} className="fill-transparent" onClick={() => onSelect(null)} aria-hidden="true" />
       {Object.entries(L.zones).map(([id, z]) => (
-        <g key={id} className="hit cursor-pointer" aria-label={T.zones[id].name} {...press(() => onSelect({ type: 'zone', id }))}>
+        <g key={id} className="hit cursor-pointer" aria-label={T.zones[id].name} {...press(`zone:${id}`, stop, (keyboard) => onSelect({ type: 'zone', id, keyboard }))}>
           <rect x={z.x} y={z.y} width={z.w} height={z.h} rx={18} className={ZONE_FILL[id]} strokeWidth={zoneSel(id) ? 2.5 : 1} />
           <text x={z.x + 16} y={z.y + 15 + L.text.zone * 0.72} className="fill-ink font-extrabold" style={{ fontSize: L.text.zone }}>
             {T.zones[id].name}
@@ -279,7 +307,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
         </g>
       ))}
 
-      <g className="hit cursor-pointer" aria-label={T.zones.mesh.name} {...press(() => onSelect({ type: 'zone', id: 'mesh' }))}>
+      <g className="hit cursor-pointer" aria-label={T.zones.mesh.name} {...press('zone:mesh', stop, (keyboard) => onSelect({ type: 'zone', id: 'mesh', keyboard }))}>
         {L.mesh.map((pts, i) => (
           <g key={i}>
             <polyline points={pointsAttr(pts)} className="fill-none stroke-transparent" strokeWidth={14} />
@@ -305,7 +333,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
         const [lx, ly, anchor] = st.label;
         const sel = selected?.type === 'station' && selected.id === id;
         return (
-          <g key={id} className="hit cursor-pointer" aria-label={T.stations[id].name} {...press(() => onSelect({ type: 'station', id }))}>
+          <g key={id} className="hit cursor-pointer" aria-label={T.stations[id].name} {...press(`station:${id}`, stop, (keyboard) => onSelect({ type: 'station', id, keyboard }))}>
             <circle cx={x} cy={y} r={st.big ? 10 : 7} className={st.big ? 'fill-ink stroke-white' : `fill-white ${sel ? 'stroke-traffic' : 'stroke-ink'}`} strokeWidth={st.big ? 3 : 3} />
             <text x={lx} y={ly} textAnchor={anchor} className="fill-ink font-semibold" style={{ fontSize: L.text.station }}>
               {T.stations[id].name}
@@ -317,7 +345,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
 
       {Object.entries(L.tiles).map(([id, t]) => (
         <g key={id}>
-          <Tile T={T} fs={L.text} id={id} t={t} s={s} selected={selected} onSelect={onSelect} />
+          <Tile T={T} fs={L.text} id={id} t={t} s={s} selected={selected} onSelect={onSelect} stop={stop} />
           {NODES[id].zone === 'onprem' && <GpuRows L={L} t={t} />}
         </g>
       ))}
@@ -327,7 +355,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
           const box = boxes.get(p.id);
           if (!box) return null;
           return (
-            <Pod key={p.id} T={T} fs={L.text} pod={p} box={box} reduce={reduce} selected={selected?.type === 'pod' && selected.id === p.id} onSelect={onSelect} />
+            <Pod key={p.id} T={T} fs={L.text} pod={p} box={box} reduce={reduce} selected={selected?.type === 'pod' && selected.id === p.id} onSelect={onSelect} stop={stop} />
           );
         })}
       </AnimatePresence>
@@ -360,7 +388,12 @@ function anchorOf(L, s, sel) {
 }
 
 // The card opens next to what was clicked: below it in the top half of the map, above it in the bottom half.
-function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
+// Opened from the keyboard, it takes the focus: its actions come right after it in the tab order.
+function DetailCard({ T, L, a, info, onClose, actions, addDisabled, selected, focusIn, focusOut }) {
+  const heading = useRef(null);
+  useEffect(() => {
+    if (selected.keyboard) heading.current?.focus();
+  }, [selected]);
   const cx = ((a.x + a.w / 2) / L.width) * 100;
   const below = a.y + a.h / 2 < L.height / 2;
   const style = {
@@ -375,10 +408,14 @@ function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
       aria-live="polite"
       aria-label={info.title}
       style={style}
+      onFocus={focusIn}
+      onBlur={(e) => {
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) focusOut();
+      }}
       className="absolute z-20 w-[300px] max-w-[calc(100%-16px)] rounded-[18px] border border-ink/10 bg-white p-4 shadow-[0_18px_40px_-18px_rgba(20,24,46,0.45)]"
     >
       <div className="flex items-start justify-between gap-3">
-        <h3 className="text-[17px] leading-tight font-extrabold">{info.title}</h3>
+        <h3 ref={heading} tabIndex={-1} className="text-[17px] leading-tight font-extrabold">{info.title}</h3>
         <button type="button" onClick={onClose} aria-label={T.ui.close} className="-mt-1 -mr-1 size-7 shrink-0 rounded-full text-[20px] leading-none text-muted hover:bg-paper hover:text-ink">
           ×
         </button>
@@ -395,11 +432,28 @@ function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
 }
 
 function MapBox({ T, L, s, reduce, selected, onSelect, info, actions, addDisabled }) {
+  const ref = useRef(null);
+  const last = useRef(null);
+  const inCard = useRef(false);
+  // When the card closes, the focus goes back to the part of the map that opened it, if the card was
+  // opened from the keyboard or had the focus.
+  useEffect(() => {
+    const prev = last.current;
+    last.current = selected;
+    if (selected || !prev) return;
+    if (prev.keyboard || inCard.current) ref.current?.querySelector(`[data-key="${keyOf(prev)}"]`)?.focus();
+    inCard.current = false;
+  }, [selected]);
   const a = selected && info ? anchorOf(L, s, selected) : null;
   return (
-    <div className="relative">
+    <div ref={ref} className="relative">
       <MapSvg T={T} L={L} s={s} reduce={reduce} selected={selected} onSelect={onSelect} />
-      {a && <DetailCard T={T} L={L} a={a} info={info} onClose={() => onSelect(null)} actions={actions} addDisabled={addDisabled} />}
+      {a && (
+        <DetailCard
+          T={T} L={L} a={a} info={info} onClose={() => onSelect(null)} actions={actions} addDisabled={addDisabled}
+          selected={selected} focusIn={() => { inCard.current = true; }} focusOut={() => { inCard.current = false; }}
+        />
+      )}
     </div>
   );
 }
@@ -651,15 +705,12 @@ export default function Playground({ lang = 'en' }) {
     const alive = begin();
     const node = NODES[id];
     if (!isUp(sim.current, id)) return;
-    const on = podsOn(sim.current, id);
+    const { s: next, on, promoted } = switchOffNode(sim.current, id);
+    commit(next);
+    const line = offLine(T, next, id, on);
+    log(line.text, line.tone);
 
     if (node.zone === 'paas') {
-      update((st) => ({
-        ...st,
-        nodes: { ...st.nodes, [id]: 'down' },
-        pods: st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, status: 'down' } : p)),
-      }));
-      log(on.length ? msg.down(nodeName(id), labels(on)) : msg.downEmpty(nodeName(id)), 'alarm');
       if (!on.length) return;
       await wait(1400);
       if (!alive()) return;
@@ -673,8 +724,8 @@ export default function Playground({ lang = 'en' }) {
         const ok = await k.hop({ path: 'backupsPaas' }, 900);
         k.done();
         if (!ok) return;
-        const { s: next, placed } = restorePaas(sim.current);
-        commit(next);
+        const { s: restored, placed } = restorePaas(sim.current);
+        commit(restored);
         await wait(900);
         if (!alive()) return;
         markRunning(placed);
@@ -685,27 +736,9 @@ export default function Playground({ lang = 'en' }) {
       return;
     }
 
-    if (node.role === 'control') {
-      update((st) => ({ ...st, nodes: { ...st.nodes, [id]: 'down' } }));
-      const up = ['cp1', 'cp2', 'cp3'].filter((c) => isUp(sim.current, c)).length;
-      if (up >= 2) log(msg.cpDown(nodeName(id), up), 'warn');
-      else log(msg.cpQuorum(nodeName(id), up), 'alarm');
-      return;
-    }
+    if (node.role === 'control') return;
 
     if (node.role === 'worker') {
-      let promoted = false;
-      update((st) => {
-        let pods = st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, node: null, status: 'pending' } : p));
-        const lost = pods.find((p) => p.svc === 'sql' && p.role === 'primary' && p.status === 'pending');
-        const replica = pods.find((p) => p.svc === 'sql' && p.role === 'replica' && p.status === 'run');
-        if (lost && replica) {
-          promoted = true;
-          pods = pods.map((p) => (p.id === lost.id ? { ...p, role: 'replica' } : p.id === replica.id ? { ...p, role: 'primary' } : p));
-        }
-        return { ...st, nodes: { ...st.nodes, [id]: 'down' }, pods };
-      });
-      log(msg.workerDown(nodeName(id)), 'alarm');
       await wait(1200);
       if (!alive()) return;
       log(on.length ? msg.workerMoving(nodeName(id), on.length) : msg.workerEmpty(nodeName(id)), 'warn');
@@ -716,13 +749,8 @@ export default function Playground({ lang = 'en' }) {
       return;
     }
 
-    // GPU server
-    update((st) => ({
-      ...st,
-      nodes: { ...st.nodes, [id]: 'down' },
-      pods: st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, node: null, gpu: null, status: 'pending' } : p)),
-    }));
-    log(msg.down(nodeName(id), labels(on)), 'alarm');
+    // GPU server: with nothing on it, nothing has to move.
+    if (!on.length) return;
     await wait(1200);
     if (!alive()) return;
     await placeModels(alive);
@@ -765,12 +793,8 @@ export default function Playground({ lang = 'en' }) {
     const alive = begin();
     const node = NODES[id];
     if (sim.current.nodes[id] !== 'down') return;
-    const back = podsOn(sim.current, id).filter((p) => p.status === 'down');
-    update((st) => ({
-      ...st,
-      nodes: { ...st.nodes, [id]: 'up' },
-      pods: st.pods.map((p) => (p.node === id && p.status === 'down' ? { ...p, status: 'run' } : p)),
-    }));
+    const { s: next, back } = switchOnNode(sim.current, id);
+    commit(next);
     if (node.zone === 'paas') {
       log(back.length ? msg.paasBack(nodeName(id), labels(back)) : msg.paasBackEmpty(nodeName(id)), 'ok');
       return;
@@ -804,14 +828,24 @@ export default function Playground({ lang = 'en' }) {
       const ok = await k.hop({ path: 'registryK8s' }, 900);
       k.done();
       if (!ok) return;
-      update((st) => ({ ...st, release: ver }));
-      for (const svc of ['web', 'api', 'jobs']) {
+      update((st) => startRelease(st, ver));
+      for (const svc of RELEASED) {
         log(msg.rolling(svc));
         const olds = running(svc, (p) => p.zone === 'k8s' && p.ver < ver).map((p) => p.id);
         for (const oldId of olds) {
           if (!alive()) return;
+          // Without quorum nothing can be scheduled: the rollout waits for a control node to come back.
+          if (!quorum(sim.current)) {
+            log(msg.rolloutWaits, 'alarm');
+            while (!quorum(sim.current)) {
+              await wait(300);
+              if (!alive()) return;
+            }
+            log(msg.rolloutResumes, 'ok');
+          }
+          // A pod whose worker died meanwhile is waiting, and will start from the new version.
           const old = sim.current.pods.find((p) => p.id === oldId);
-          if (!old || old.status !== 'run' || !quorum(sim.current)) continue;
+          if (!old || old.status !== 'run') continue;
           const made = newPod(sim.current, { svc, zone: 'k8s', ver });
           let res = scheduleK8s({ ...made.s, pods: [...made.s.pods, made.pod] });
           if (!res.placed.some((p) => p.id === made.pod.id)) {
@@ -838,7 +872,8 @@ export default function Playground({ lang = 'en' }) {
           setPods((pods) => pods.filter((p) => p.id !== old.id));
         }
       }
-      log(msg.live(ver), 'ok');
+      const end = releaseLine(T, sim.current, ver);
+      log(end.text, end.tone);
     } finally {
       if (alive()) setBusy('release', false);
     }
@@ -924,7 +959,12 @@ export default function Playground({ lang = 'en' }) {
   // ---------- autoplay ----------
   // While the demo is on screen, something happens every few seconds. A click or a key press
   // inside the demo hands it to the visitor for 20 seconds; the pause button stops it.
+  // With reduced motion there is no autoplay, and no button to start it.
   const [autoplay, setAutoplay] = useState(true);
+  // The reduced motion setting is known only in the browser: it changes the markup after the first
+  // render, so the page hydrates with the same markup the server wrote.
+  const [still, setStill] = useState(false);
+  const playing = autoplay && !still;
   const rootRef = useRef(null);
   const inView = useRef(false);
   const handsOn = useRef(0);
@@ -959,6 +999,7 @@ export default function Playground({ lang = 'en' }) {
   autoRef.current = autoStep;
 
   useEffect(() => {
+    setStill(Boolean(reduce));
     if (reduce) setAutoplay(false);
   }, [reduce]);
 
@@ -999,6 +1040,7 @@ export default function Playground({ lang = 'en' }) {
     handsOn.current = Date.now() + 20000;
   };
   const toggleAutoplay = () => {
+    if (reduce) return;
     handsOn.current = 0;
     setAutoplay((on) => !on);
   };
@@ -1050,24 +1092,27 @@ export default function Playground({ lang = 'en' }) {
           <button type="button" onClick={reset} className="rounded-full px-2 py-1.5 text-left text-[14px] font-semibold text-ink/75 underline decoration-ink/20 underline-offset-4 hover:text-ink">
             {T.ui.reset}
           </button>
-          <button
-            type="button"
-            onClick={toggleAutoplay}
-            aria-label={autoplay ? T.ui.pause : T.ui.play}
-            title={autoplay ? T.ui.pause : T.ui.play}
-            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-ink/15 bg-white text-ink transition-colors hover:border-ink hover:bg-ink hover:text-white"
-          >
-            {autoplay ? (
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />
-              </svg>
-            )}
-          </button>
+          {/* Hidden by CSS too, so it does not show up before the page hydrates. */}
+          {!still && (
+            <button
+              type="button"
+              onClick={toggleAutoplay}
+              aria-label={playing ? T.ui.pause : T.ui.play}
+              title={playing ? T.ui.pause : T.ui.play}
+              className="flex size-9 shrink-0 items-center justify-center rounded-full border border-ink/15 bg-white text-ink transition-colors hover:border-ink hover:bg-ink hover:text-white motion-reduce:hidden"
+            >
+              {playing ? (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                  <rect x="6" y="5" width="4" height="14" rx="1" />
+                  <rect x="14" y="5" width="4" height="14" rx="1" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />
+                </svg>
+              )}
+            </button>
+          )}
         </div>
         <Action dot="text-traffic" fired={fired.page} onClick={run.page}>{T.ui.buttons.page}</Action>
         <Action dot="text-gpu" fired={fired.ask} onClick={run.ask}>{T.ui.buttons.ask}</Action>
@@ -1089,7 +1134,8 @@ export default function Playground({ lang = 'en' }) {
 
         <section aria-label={T.ui.logLabel} className="sticky bottom-3 z-10 h-[8.5rem] rounded-[22px] bg-ink text-white shadow-[0_14px_36px_-12px_rgba(20,24,46,0.55)] [grid-area:log] lg:relative lg:bottom-auto lg:h-auto lg:min-h-[8rem] lg:shadow-none">
           <div ref={logRef} className="absolute inset-0 overflow-y-auto p-4 lg:p-5">
-            <ol aria-live={autoplay ? 'off' : 'polite'} className="space-y-2 text-[14px] leading-snug">
+            {/* Autoplay writes a line every few seconds: read aloud only the lines the visitor starts. */}
+            <ol aria-live={playing ? 'off' : 'polite'} className="space-y-2 text-[14px] leading-snug">
               {s.log.length === 0 && <li className="text-white/60">{T.ui.waiting}</li>}
               {s.log.map((l) => (
                 <li key={l.id} className="flex gap-3">
