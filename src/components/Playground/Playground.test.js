@@ -49,3 +49,39 @@ describe('autoplay', () => {
     expect(logList(el).getAttribute('aria-live')).toBe('polite');
   });
 });
+
+describe('the map with a keyboard', () => {
+  const key = (el, name) => act(() => {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+  });
+  const maps = (el) => [...el.querySelectorAll('svg[role="group"]')];
+
+  it('is a single tab stop', () => {
+    const el = mount();
+    expect(maps(el)).toHaveLength(2);
+    for (const svg of maps(el)) expect(svg.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
+
+  it('moves between its parts with the arrow keys', () => {
+    const [svg] = maps(mount());
+    const first = svg.querySelector('[tabindex="0"]');
+    act(() => first.focus());
+    key(first, 'ArrowDown');
+    const next = document.activeElement;
+    expect(next.getAttribute('aria-label')).toBe('You');
+    expect(next.getAttribute('tabindex')).toBe('0');
+    expect(first.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('moves focus into the card opened with Enter, and back when Escape closes it', () => {
+    const [svg] = maps(mount());
+    const server = svg.querySelector('[data-key="node:w1"]');
+    act(() => server.focus());
+    key(server, 'Enter');
+    const card = document.activeElement.closest('[role="region"]');
+    expect(card.getAttribute('aria-label')).toBe('Worker 1');
+    expect(card.querySelector('button:not([aria-label])').textContent).toContain('Switch off');
+    key(document.activeElement, 'Escape');
+    expect(document.activeElement.getAttribute('data-key')).toBe('node:w1');
+  });
+});

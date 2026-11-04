@@ -8,6 +8,7 @@ import {
 import { TALL, WIDE } from './layouts.js';
 import { STRINGS } from './strings.js';
 import { labelsIn, offLine, releaseLine } from './lines.js';
+import { focusOrder, keyOf, moveFocus } from './focus.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const LOG_LINES = 30;
@@ -92,13 +93,16 @@ const ROUTE_CLASS = {
   ink: 'stroke-ink/35',
 };
 
-function press(fn) {
+// A part of the map that can be picked. Only the part at `stop` is in the tab order: the arrow keys
+// move between the others (focus.js). `fn` learns whether the part was picked from the keyboard.
+function press(key, stop, fn) {
   return {
     role: 'button',
-    tabIndex: 0,
-    onClick: fn,
+    tabIndex: key === stop ? 0 : -1,
+    'data-key': key,
+    onClick: () => fn(false),
     onKeyDown: (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(true); }
     },
   };
 }
@@ -136,7 +140,7 @@ function Packet({ L, packet, boxes, reduce }) {
   );
 }
 
-function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
+function Pod({ T, fs, pod, box, reduce, selected, onSelect, stop }) {
   const svc = SERVICES[pod.svc];
   const kind = KIND[svc.kind];
   const solid = Boolean(svc.gpu);
@@ -158,7 +162,7 @@ function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
       transition={{ duration: reduce ? 0 : 0.6, ease: [0.3, 0, 0.2, 1] }}
       className="hit cursor-pointer"
       aria-label={`${T.services[pod.svc].name}${pod.status === 'down' ? T.ui.podStopped : pod.status === 'pending' ? T.ui.podWaiting : ''}`}
-      {...press(() => onSelect({ type: 'pod', id: pod.id }))}
+      {...press(`pod:${pod.id}`, stop, (keyboard) => onSelect({ type: 'pod', id: pod.id, keyboard }))}
     >
       <rect
         width={box.w}
@@ -187,15 +191,15 @@ function Pod({ T, fs, pod, box, reduce, selected, onSelect }) {
   );
 }
 
-function Tile({ T, fs, id, t, s, selected, onSelect }) {
+function Tile({ T, fs, id, t, s, selected, onSelect, stop }) {
   const node = NODES[id];
   const status = s.nodes[id];
   const sel = selected?.type === 'node' && selected.id === id;
-  const pick = () => onSelect({ type: 'node', id });
+  const pick = (keyboard) => onSelect({ type: 'node', id, keyboard });
   if (status === 'absent' || status === 'creating') {
     const creating = status === 'creating';
     return (
-      <g className="hit cursor-pointer" aria-label={creating ? T.ui.tileCreating(T.nodes[id]) : T.ui.tileFree} {...press(pick)}>
+      <g className="hit cursor-pointer" aria-label={creating ? T.ui.tileCreating(T.nodes[id]) : T.ui.tileFree} {...press(`node:${id}`, stop, pick)}>
         <rect
           x={t.x} y={t.y} width={t.w} height={t.h} rx={10}
           className={creating ? 'fill-traffic/[0.06] stroke-traffic creating' : 'fill-transparent stroke-ink/25'}
@@ -215,7 +219,7 @@ function Tile({ T, fs, id, t, s, selected, onSelect }) {
   const up = status === 'up';
   const small = node.role === 'control';
   return (
-    <g className="hit cursor-pointer" aria-label={T.ui.tileState(T.nodes[id], up)} {...press(pick)}>
+    <g className="hit cursor-pointer" aria-label={T.ui.tileState(T.nodes[id], up)} {...press(`node:${id}`, stop, pick)}>
       <rect
         x={t.x} y={t.y} width={t.w} height={t.h} rx={small ? 8 : 10}
         className={up ? `fill-white ${sel ? 'stroke-traffic' : 'stroke-ink/15'}` : 'fill-alarm/[0.07] stroke-alarm'}
@@ -263,11 +267,35 @@ function GpuRows({ L, t }) {
 function MapSvg({ T, L, s, reduce, selected, onSelect }) {
   const boxes = podBoxes(L, s);
   const zoneSel = (id) => selected?.type === 'zone' && selected.id === id;
+  // The part of the map in the tab order: the last one focused, or the first while that one is gone.
+  const order = focusOrder(L, s);
+  const [current, setCurrent] = useState(null);
+  const stop = order.includes(current) ? current : order[0];
+  const partOf = (e) => e.target.closest?.('[data-key]')?.getAttribute('data-key');
+  const onKeyDown = (e) => {
+    const from = partOf(e);
+    const next = from && moveFocus(order, from, e.key);
+    if (!next) return;
+    e.preventDefault();
+    setCurrent(next);
+    e.currentTarget.querySelector(`[data-key="${next}"]`)?.focus();
+  };
+  const onFocus = (e) => {
+    const key = partOf(e);
+    if (key) setCurrent(key);
+  };
   return (
-    <svg viewBox={`0 0 ${L.width} ${L.height}`} className="block h-auto w-full select-none font-sans" role="group" aria-label={T.ui.mapLabel}>
+    <svg
+      viewBox={`0 0 ${L.width} ${L.height}`}
+      className="block h-auto w-full select-none font-sans"
+      role="group"
+      aria-label={T.ui.mapLabel}
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
+    >
       <rect width={L.width} height={L.height} className="fill-transparent" onClick={() => onSelect(null)} aria-hidden="true" />
       {Object.entries(L.zones).map(([id, z]) => (
-        <g key={id} className="hit cursor-pointer" aria-label={T.zones[id].name} {...press(() => onSelect({ type: 'zone', id }))}>
+        <g key={id} className="hit cursor-pointer" aria-label={T.zones[id].name} {...press(`zone:${id}`, stop, (keyboard) => onSelect({ type: 'zone', id, keyboard }))}>
           <rect x={z.x} y={z.y} width={z.w} height={z.h} rx={18} className={ZONE_FILL[id]} strokeWidth={zoneSel(id) ? 2.5 : 1} />
           <text x={z.x + 16} y={z.y + 15 + L.text.zone * 0.72} className="fill-ink font-extrabold" style={{ fontSize: L.text.zone }}>
             {T.zones[id].name}
@@ -279,7 +307,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
         </g>
       ))}
 
-      <g className="hit cursor-pointer" aria-label={T.zones.mesh.name} {...press(() => onSelect({ type: 'zone', id: 'mesh' }))}>
+      <g className="hit cursor-pointer" aria-label={T.zones.mesh.name} {...press('zone:mesh', stop, (keyboard) => onSelect({ type: 'zone', id: 'mesh', keyboard }))}>
         {L.mesh.map((pts, i) => (
           <g key={i}>
             <polyline points={pointsAttr(pts)} className="fill-none stroke-transparent" strokeWidth={14} />
@@ -305,7 +333,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
         const [lx, ly, anchor] = st.label;
         const sel = selected?.type === 'station' && selected.id === id;
         return (
-          <g key={id} className="hit cursor-pointer" aria-label={T.stations[id].name} {...press(() => onSelect({ type: 'station', id }))}>
+          <g key={id} className="hit cursor-pointer" aria-label={T.stations[id].name} {...press(`station:${id}`, stop, (keyboard) => onSelect({ type: 'station', id, keyboard }))}>
             <circle cx={x} cy={y} r={st.big ? 10 : 7} className={st.big ? 'fill-ink stroke-white' : `fill-white ${sel ? 'stroke-traffic' : 'stroke-ink'}`} strokeWidth={st.big ? 3 : 3} />
             <text x={lx} y={ly} textAnchor={anchor} className="fill-ink font-semibold" style={{ fontSize: L.text.station }}>
               {T.stations[id].name}
@@ -317,7 +345,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
 
       {Object.entries(L.tiles).map(([id, t]) => (
         <g key={id}>
-          <Tile T={T} fs={L.text} id={id} t={t} s={s} selected={selected} onSelect={onSelect} />
+          <Tile T={T} fs={L.text} id={id} t={t} s={s} selected={selected} onSelect={onSelect} stop={stop} />
           {NODES[id].zone === 'onprem' && <GpuRows L={L} t={t} />}
         </g>
       ))}
@@ -327,7 +355,7 @@ function MapSvg({ T, L, s, reduce, selected, onSelect }) {
           const box = boxes.get(p.id);
           if (!box) return null;
           return (
-            <Pod key={p.id} T={T} fs={L.text} pod={p} box={box} reduce={reduce} selected={selected?.type === 'pod' && selected.id === p.id} onSelect={onSelect} />
+            <Pod key={p.id} T={T} fs={L.text} pod={p} box={box} reduce={reduce} selected={selected?.type === 'pod' && selected.id === p.id} onSelect={onSelect} stop={stop} />
           );
         })}
       </AnimatePresence>
@@ -360,7 +388,12 @@ function anchorOf(L, s, sel) {
 }
 
 // The card opens next to what was clicked: below it in the top half of the map, above it in the bottom half.
-function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
+// Opened from the keyboard, it takes the focus: its actions come right after it in the tab order.
+function DetailCard({ T, L, a, info, onClose, actions, addDisabled, selected, focusIn, focusOut }) {
+  const heading = useRef(null);
+  useEffect(() => {
+    if (selected.keyboard) heading.current?.focus();
+  }, [selected]);
   const cx = ((a.x + a.w / 2) / L.width) * 100;
   const below = a.y + a.h / 2 < L.height / 2;
   const style = {
@@ -375,10 +408,14 @@ function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
       aria-live="polite"
       aria-label={info.title}
       style={style}
+      onFocus={focusIn}
+      onBlur={(e) => {
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) focusOut();
+      }}
       className="absolute z-20 w-[300px] max-w-[calc(100%-16px)] rounded-[18px] border border-ink/10 bg-white p-4 shadow-[0_18px_40px_-18px_rgba(20,24,46,0.45)]"
     >
       <div className="flex items-start justify-between gap-3">
-        <h3 className="text-[17px] leading-tight font-extrabold">{info.title}</h3>
+        <h3 ref={heading} tabIndex={-1} className="text-[17px] leading-tight font-extrabold">{info.title}</h3>
         <button type="button" onClick={onClose} aria-label={T.ui.close} className="-mt-1 -mr-1 size-7 shrink-0 rounded-full text-[20px] leading-none text-muted hover:bg-paper hover:text-ink">
           ×
         </button>
@@ -395,11 +432,28 @@ function DetailCard({ T, L, a, info, onClose, actions, addDisabled }) {
 }
 
 function MapBox({ T, L, s, reduce, selected, onSelect, info, actions, addDisabled }) {
+  const ref = useRef(null);
+  const last = useRef(null);
+  const inCard = useRef(false);
+  // When the card closes, the focus goes back to the part of the map that opened it, if the card was
+  // opened from the keyboard or had the focus.
+  useEffect(() => {
+    const prev = last.current;
+    last.current = selected;
+    if (selected || !prev) return;
+    if (prev.keyboard || inCard.current) ref.current?.querySelector(`[data-key="${keyOf(prev)}"]`)?.focus();
+    inCard.current = false;
+  }, [selected]);
   const a = selected && info ? anchorOf(L, s, selected) : null;
   return (
-    <div className="relative">
+    <div ref={ref} className="relative">
       <MapSvg T={T} L={L} s={s} reduce={reduce} selected={selected} onSelect={onSelect} />
-      {a && <DetailCard T={T} L={L} a={a} info={info} onClose={() => onSelect(null)} actions={actions} addDisabled={addDisabled} />}
+      {a && (
+        <DetailCard
+          T={T} L={L} a={a} info={info} onClose={() => onSelect(null)} actions={actions} addDisabled={addDisabled}
+          selected={selected} focusIn={() => { inCard.current = true; }} focusOut={() => { inCard.current = false; }}
+        />
+      )}
     </div>
   );
 }
