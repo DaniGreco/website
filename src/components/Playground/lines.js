@@ -1,6 +1,6 @@
 // Log lines that depend on the state of the map. Which line to write is chosen here, away from the
 // animations in Playground.jsx, so it can be tested. The texts themselves live in strings.js.
-import { NODES, SERVICES, quorum } from './model.js';
+import { NODES, SERVICES, behind, quorum } from './model.js';
 
 export const labelsIn = (T, pods) => T.list(pods.map((p) => SERVICES[p.svc].label));
 
@@ -17,4 +17,10 @@ export function offLine(T, s, id, on) {
   if (node.role === 'worker') return { text: T.log.workerDown(name), tone: 'alarm' };
   // Container fleet and GPU servers: what stops with it, if anything ran there.
   return { text: on.length ? T.log.down(name, labelsIn(T, on)) : T.log.downEmpty(name), tone: 'alarm' };
+}
+
+// The end of a release: live only if every pod it updates runs the new version.
+export function releaseLine(T, s, ver) {
+  const left = behind(s, ver).length;
+  return left ? { text: T.log.releaseBehind(ver, left), tone: 'warn' } : { text: T.log.live(ver), tone: 'ok' };
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CPU_SLOTS, GPU_CELLS, PAAS_SLOTS, SERVICES, WORKER_SLOTS,
-  initialState, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem, switchOffNode, switchOnNode,
+  behind, initialState, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem, startRelease,
+  switchOffNode, switchOnNode,
 } from './model.js';
 
 const off = (s, ...ids) => ids.reduce((st, id) => switchOffNode(st, id).s, s);
@@ -139,5 +140,30 @@ describe('restoring the container fleet', () => {
     expect(placed).toHaveLength(3);
     expect(podsOn(s, 's3')).toHaveLength(PAAS_SLOTS);
     expect(s.pods.filter((p) => p.zone === 'paas' && p.status === 'down')).toHaveLength(4);
+  });
+});
+
+describe('releases', () => {
+  const versions = (s, filter) => s.pods.filter((p) => p.zone === 'k8s' && p.svc !== 'sql' && filter(p)).map((p) => p.ver);
+
+  it('gives the new version to the pods still waiting when a release starts', () => {
+    const s = startRelease(off(initialState(), 'w3'), 2);
+    expect(s.release).toBe(2);
+    expect(versions(s, (p) => !p.node)).toEqual([2, 2, 2]);
+    expect(versions(s, (p) => p.node).every((v) => v === 1)).toBe(true);
+    expect(pods(s, 'sql').every((p) => p.ver === 1)).toBe(true);
+  });
+
+  it('starts from the current release the pods of a worker that dies during a release', () => {
+    const s = off(startRelease(initialState(), 2), 'w1');
+    expect(versions(s, (p) => !p.node)).toEqual([2, 2, 2]);
+    expect(pod(s, 'sql', (p) => !p.node).ver).toBe(1);
+  });
+
+  it('lists the pods a release has not reached yet', () => {
+    const s = startRelease(initialState(), 2);
+    expect(behind(s, 2)).toHaveLength(8);
+    const done = { ...s, pods: s.pods.map((p) => (p.zone === 'k8s' && p.svc !== 'sql' ? { ...p, ver: 2 } : p)) };
+    expect(behind(done, 2)).toEqual([]);
   });
 });

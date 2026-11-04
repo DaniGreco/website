@@ -85,9 +85,22 @@ export const quorum = (s) => CONTROL.filter((id) => isUp(s, id)).length >= 2;
 export const workersUp = (s) => WORKERS.filter((id) => isUp(s, id));
 export const nextSpare = (s) => WORKERS.find((id) => s.nodes[id] === 'absent');
 
+// The Kubernetes services a release updates: everything but the database.
+export const RELEASED = ['web', 'api', 'jobs'];
+const released = (p) => p.zone === 'k8s' && RELEASED.includes(p.svc) && live(p);
+
+// A release starts: pods still waiting for a worker will start from the new image, as with a Deployment.
+export function startRelease(s, ver) {
+  return { ...s, release: ver, pods: s.pods.map((p) => (released(p) && !p.node ? { ...p, ver } : p)) };
+}
+
+// The pods a release has not reached yet.
+export const behind = (s, ver) => s.pods.filter((p) => released(p) && p.ver < ver);
+
 // Switching a server off. Container fleet: its apps stop where they are, until someone restores them.
 // Kubernetes worker: its pods go back to the queue, and the database replica takes over if the primary
-// was there. GPU server: its models go back to the queue. `on` is what was running on the server.
+// was there, and the pods will start again from the current release. GPU server: its models go back to
+// the queue. `on` is what was running on the server.
 export function switchOffNode(s, id) {
   const node = NODES[id];
   const on = podsOn(s, id);
@@ -98,7 +111,10 @@ export function switchOffNode(s, id) {
   }
   if (node.role === 'control') return { s: { ...s, nodes }, on, promoted: false };
   if (node.role === 'worker') {
-    let pods = s.pods.map((p) => (here(p) ? { ...p, node: null, status: 'pending' } : p));
+    let pods = s.pods.map((p) => {
+      if (!here(p)) return p;
+      return { ...p, node: null, status: 'pending', ...(released(p) && { ver: s.release }) };
+    });
     const lost = pods.find((p) => p.svc === 'sql' && p.role === 'primary' && p.status === 'pending');
     const replica = pods.find((p) => p.svc === 'sql' && p.role === 'replica' && p.status === 'run');
     const promoted = Boolean(lost && replica);
