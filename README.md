@@ -15,6 +15,7 @@ npm install
 npm run dev       # http://localhost:4321
 npm run build     # static site in dist/
 npm run preview   # serve dist/ locally
+npm test          # unit tests (Vitest)
 ```
 
 ## Where things are
@@ -22,6 +23,7 @@ npm run preview   # serve dist/ locally
 - `src/pages/index.astro`: the page.
 - `src/components/Playground/`: the map.
   - `model.js`: zones, servers, services, and how they get scheduled when something breaks.
+    Pure functions, tested in `model.test.js`.
   - `layouts.js`: coordinates of the wide map (desktop) and the tall one (phone).
   - `Playground.jsx`: drawing, animations and the scenarios.
 - `src/scripts/backgrounds/flow.js`: the page background, strands following a noise flow field;

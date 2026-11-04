@@ -2,7 +2,8 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   KIND, NODES, SERVICES, ZONE_NODES,
-  initialState, isUp, newPod, nextSpare, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem, workersUp,
+  initialState, isUp, newPod, nextSpare, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem,
+  switchOffNode, switchOnNode, workersUp,
 } from './model.js';
 import { TALL, WIDE } from './layouts.js';
 import { STRINGS } from './strings.js';
@@ -651,14 +652,10 @@ export default function Playground({ lang = 'en' }) {
     const alive = begin();
     const node = NODES[id];
     if (!isUp(sim.current, id)) return;
-    const on = podsOn(sim.current, id);
+    const { s: next, on, promoted } = switchOffNode(sim.current, id);
+    commit(next);
 
     if (node.zone === 'paas') {
-      update((st) => ({
-        ...st,
-        nodes: { ...st.nodes, [id]: 'down' },
-        pods: st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, status: 'down' } : p)),
-      }));
       log(on.length ? msg.down(nodeName(id), labels(on)) : msg.downEmpty(nodeName(id)), 'alarm');
       if (!on.length) return;
       await wait(1400);
@@ -686,7 +683,6 @@ export default function Playground({ lang = 'en' }) {
     }
 
     if (node.role === 'control') {
-      update((st) => ({ ...st, nodes: { ...st.nodes, [id]: 'down' } }));
       const up = ['cp1', 'cp2', 'cp3'].filter((c) => isUp(sim.current, c)).length;
       if (up >= 2) log(msg.cpDown(nodeName(id), up), 'warn');
       else log(msg.cpQuorum(nodeName(id), up), 'alarm');
@@ -694,17 +690,6 @@ export default function Playground({ lang = 'en' }) {
     }
 
     if (node.role === 'worker') {
-      let promoted = false;
-      update((st) => {
-        let pods = st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, node: null, status: 'pending' } : p));
-        const lost = pods.find((p) => p.svc === 'sql' && p.role === 'primary' && p.status === 'pending');
-        const replica = pods.find((p) => p.svc === 'sql' && p.role === 'replica' && p.status === 'run');
-        if (lost && replica) {
-          promoted = true;
-          pods = pods.map((p) => (p.id === lost.id ? { ...p, role: 'replica' } : p.id === replica.id ? { ...p, role: 'primary' } : p));
-        }
-        return { ...st, nodes: { ...st.nodes, [id]: 'down' }, pods };
-      });
       log(msg.workerDown(nodeName(id)), 'alarm');
       await wait(1200);
       if (!alive()) return;
@@ -717,11 +702,6 @@ export default function Playground({ lang = 'en' }) {
     }
 
     // GPU server
-    update((st) => ({
-      ...st,
-      nodes: { ...st.nodes, [id]: 'down' },
-      pods: st.pods.map((p) => (p.node === id && p.status !== 'stop' ? { ...p, node: null, gpu: null, status: 'pending' } : p)),
-    }));
     log(msg.down(nodeName(id), labels(on)), 'alarm');
     await wait(1200);
     if (!alive()) return;
@@ -765,12 +745,8 @@ export default function Playground({ lang = 'en' }) {
     const alive = begin();
     const node = NODES[id];
     if (sim.current.nodes[id] !== 'down') return;
-    const back = podsOn(sim.current, id).filter((p) => p.status === 'down');
-    update((st) => ({
-      ...st,
-      nodes: { ...st.nodes, [id]: 'up' },
-      pods: st.pods.map((p) => (p.node === id && p.status === 'down' ? { ...p, status: 'run' } : p)),
-    }));
+    const { s: next, back } = switchOnNode(sim.current, id);
+    commit(next);
     if (node.zone === 'paas') {
       log(back.length ? msg.paasBack(nodeName(id), labels(back)) : msg.paasBackEmpty(nodeName(id)), 'ok');
       return;
