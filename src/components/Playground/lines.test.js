@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { initialState, scheduleOnprem, switchOffNode, switchOnNode } from './model.js';
-import { offLine } from './lines.js';
+import { initialState, scheduleOnprem, startRelease, switchOffNode, switchOnNode } from './model.js';
+import { offLine, releaseLine } from './lines.js';
 import { STRINGS } from './strings.js';
 
 const { en, it: itT } = STRINGS;
@@ -49,5 +49,22 @@ describe('the line for a server switched off', () => {
 
   it('says a worker stops answering', () => {
     expect(lineOff(en, initialState(), 'w2')).toEqual({ text: 'Worker 2 stops answering.', tone: 'alarm' });
+  });
+});
+
+describe('the line at the end of a release', () => {
+  const allAt = (s, ver) => ({ ...s, pods: s.pods.map((p) => (p.zone === 'k8s' && p.svc !== 'sql' ? { ...p, ver } : p)) });
+
+  it('says the release is live when every pod runs it', () => {
+    const s = allAt(startRelease(initialState(), 2), 2);
+    expect(releaseLine(en, s, 2)).toEqual({ text: 'Release v2 is live. No visitor saw an error.', tone: 'ok' });
+  });
+
+  it('does not say the release is live when some pods still run the old version', () => {
+    const s = startRelease(initialState(), 2);
+    const one = { ...allAt(s, 2), pods: allAt(s, 2).pods.map((p) => (p.id === 'p11' ? { ...p, ver: 1 } : p)) };
+    expect(releaseLine(en, one, 2)).toEqual({ text: 'Release v2 is not complete: 1 pod still runs an older version.', tone: 'warn' });
+    expect(releaseLine(en, s, 2).text).toBe('Release v2 is not complete: 8 pods still run an older version.');
+    expect(releaseLine(itT, s, 2).text).toBe('Il rilascio v2 non è completo: 8 pod girano ancora una versione precedente.');
   });
 });

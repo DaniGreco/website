@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
-  KIND, NODES, SERVICES, ZONE_NODES,
+  KIND, NODES, RELEASED, SERVICES, ZONE_NODES,
   initialState, isUp, newPod, nextSpare, podsOn, quorum, restorePaas, scheduleK8s, scheduleOnprem,
-  switchOffNode, switchOnNode, workersUp,
+  startRelease, switchOffNode, switchOnNode, workersUp,
 } from './model.js';
 import { TALL, WIDE } from './layouts.js';
 import { STRINGS } from './strings.js';
-import { labelsIn, offLine } from './lines.js';
+import { labelsIn, offLine, releaseLine } from './lines.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const LOG_LINES = 30;
@@ -774,14 +774,24 @@ export default function Playground({ lang = 'en' }) {
       const ok = await k.hop({ path: 'registryK8s' }, 900);
       k.done();
       if (!ok) return;
-      update((st) => ({ ...st, release: ver }));
-      for (const svc of ['web', 'api', 'jobs']) {
+      update((st) => startRelease(st, ver));
+      for (const svc of RELEASED) {
         log(msg.rolling(svc));
         const olds = running(svc, (p) => p.zone === 'k8s' && p.ver < ver).map((p) => p.id);
         for (const oldId of olds) {
           if (!alive()) return;
+          // Without quorum nothing can be scheduled: the rollout waits for a control node to come back.
+          if (!quorum(sim.current)) {
+            log(msg.rolloutWaits, 'alarm');
+            while (!quorum(sim.current)) {
+              await wait(300);
+              if (!alive()) return;
+            }
+            log(msg.rolloutResumes, 'ok');
+          }
+          // A pod whose worker died meanwhile is waiting, and will start from the new version.
           const old = sim.current.pods.find((p) => p.id === oldId);
-          if (!old || old.status !== 'run' || !quorum(sim.current)) continue;
+          if (!old || old.status !== 'run') continue;
           const made = newPod(sim.current, { svc, zone: 'k8s', ver });
           let res = scheduleK8s({ ...made.s, pods: [...made.s.pods, made.pod] });
           if (!res.placed.some((p) => p.id === made.pod.id)) {
@@ -808,7 +818,8 @@ export default function Playground({ lang = 'en' }) {
           setPods((pods) => pods.filter((p) => p.id !== old.id));
         }
       }
-      log(msg.live(ver), 'ok');
+      const end = releaseLine(T, sim.current, ver);
+      log(end.text, end.tone);
     } finally {
       if (alive()) setBusy('release', false);
     }
