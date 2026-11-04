@@ -7,12 +7,11 @@ import {
 } from './model.js';
 import { TALL, WIDE } from './layouts.js';
 import { STRINGS } from './strings.js';
+import { labelsIn, offLine } from './lines.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const LOG_LINES = 30;
 const INITIAL_SEQ = initialState().seq;
-const label = (p) => SERVICES[p.svc].label;
-const labelsIn = (T, pods) => T.list(pods.map(label));
 
 // Groups that heal themselves: after 5 seconds with at least `min` machines off, one comes back.
 // Their log lines live in strings.js, under `repair`.
@@ -654,9 +653,10 @@ export default function Playground({ lang = 'en' }) {
     if (!isUp(sim.current, id)) return;
     const { s: next, on, promoted } = switchOffNode(sim.current, id);
     commit(next);
+    const line = offLine(T, next, id, on);
+    log(line.text, line.tone);
 
     if (node.zone === 'paas') {
-      log(on.length ? msg.down(nodeName(id), labels(on)) : msg.downEmpty(nodeName(id)), 'alarm');
       if (!on.length) return;
       await wait(1400);
       if (!alive()) return;
@@ -670,8 +670,8 @@ export default function Playground({ lang = 'en' }) {
         const ok = await k.hop({ path: 'backupsPaas' }, 900);
         k.done();
         if (!ok) return;
-        const { s: next, placed } = restorePaas(sim.current);
-        commit(next);
+        const { s: restored, placed } = restorePaas(sim.current);
+        commit(restored);
         await wait(900);
         if (!alive()) return;
         markRunning(placed);
@@ -682,15 +682,9 @@ export default function Playground({ lang = 'en' }) {
       return;
     }
 
-    if (node.role === 'control') {
-      const up = ['cp1', 'cp2', 'cp3'].filter((c) => isUp(sim.current, c)).length;
-      if (up >= 2) log(msg.cpDown(nodeName(id), up), 'warn');
-      else log(msg.cpQuorum(nodeName(id), up), 'alarm');
-      return;
-    }
+    if (node.role === 'control') return;
 
     if (node.role === 'worker') {
-      log(msg.workerDown(nodeName(id)), 'alarm');
       await wait(1200);
       if (!alive()) return;
       log(on.length ? msg.workerMoving(nodeName(id), on.length) : msg.workerEmpty(nodeName(id)), 'warn');
@@ -701,8 +695,8 @@ export default function Playground({ lang = 'en' }) {
       return;
     }
 
-    // GPU server
-    log(msg.down(nodeName(id), labels(on)), 'alarm');
+    // GPU server: with nothing on it, nothing has to move.
+    if (!on.length) return;
     await wait(1200);
     if (!alive()) return;
     await placeModels(alive);
