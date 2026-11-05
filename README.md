@@ -22,6 +22,8 @@ Tests sit next to the code they test (`*.test.js`). Pure logic runs in Node; tes
 (the map, the wheel, the background loop) run in jsdom, and `src/layouts/Base.test.js` renders whole
 pages with Astro's container API.
 
+Every pull request runs the tests and the build on GitHub Actions (`.github/workflows/check.yml`).
+
 ## Where things are
 
 - `src/pages/index.astro`: the page.
